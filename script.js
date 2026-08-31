@@ -1,8 +1,7 @@
-```javascript
 // ============================================================
-// MES EXPOSÉS — SCRIPT COMPLET
+// MES EXPOSÉS 2026
+// SCRIPT COMPLET - VERSION CORRIGÉE
 // Firebase Auth + Firestore
-// Version renforcée : session, cache, hors-ligne, reconnexion
 // ============================================================
 
 
@@ -19,14 +18,16 @@ const firebaseConfig = {
   appId: "1:1092127185821:web:a3f12532571edf795a6d74"
 };
 
-firebase.initializeApp(firebaseConfig);
+if (!firebase.apps.length) {
+  firebase.initializeApp(firebaseConfig);
+}
 
 const auth = firebase.auth();
 const db = firebase.firestore();
 
 
 // ------------------------------------------------------------
-// 2. ELEMENTS HTML
+// 2. ÉLÉMENTS HTML
 // ------------------------------------------------------------
 
 const loginScreen = document.getElementById("login-screen");
@@ -43,24 +44,26 @@ let pendingFile = null;
 let editingId = null;
 let lastExposesCache = [];
 let firebaseReady = false;
+let authListenerStarted = false;
 let currentUserUid = null;
-
-const FIRESTORE_TIMEOUT = 10000;
 
 
 // ------------------------------------------------------------
-// 4. UTILITAIRES
+// 4. OUTILS GÉNÉRAUX
 // ------------------------------------------------------------
 
 function showScreen(screen) {
-  [loginScreen, signupScreen, studentScreen].forEach(s => {
-    if (s) s.classList.add("hidden");
+  [loginScreen, signupScreen, studentScreen].forEach(element => {
+    if (element) {
+      element.classList.add("hidden");
+    }
   });
 
   if (screen) {
     screen.classList.remove("hidden");
   }
 }
+
 
 function showLoading(on, text = "Chargement...") {
   if (!loadingOverlay) return;
@@ -69,37 +72,16 @@ function showLoading(on, text = "Chargement...") {
   loadingOverlay.classList.toggle("hidden", !on);
 }
 
-function wait(ms) {
+
+function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 
-// ------------------------------------------------------------
-// 5. TIMEOUT POUR EVITER LE CHARGEMENT INFINI
-// ------------------------------------------------------------
-
-function withTimeout(promise, timeout = FIRESTORE_TIMEOUT) {
-  return Promise.race([
-    promise,
-    new Promise((_, reject) => {
-      setTimeout(() => {
-        const error = new Error(
-          "Firebase met trop de temps à répondre."
-        );
-        error.code = "app/timeout";
-        reject(error);
-      }, timeout);
-    })
-  ]);
-}
-
-
-// ------------------------------------------------------------
-// 6. SECURISATION AFFICHAGE HTML
-// ------------------------------------------------------------
-
 function escapeHtml(value) {
-  if (value === null || value === undefined) return "";
+  if (value === null || value === undefined) {
+    return "";
+  }
 
   return String(value)
     .replace(/&/g, "&amp;")
@@ -110,176 +92,268 @@ function escapeHtml(value) {
 }
 
 
-// ------------------------------------------------------------
-// 7. EMAIL FABRIQUE A PARTIR DU PSEUDO
-// ------------------------------------------------------------
+function getErrorMessage(error) {
+  if (!error) {
+    return "Une erreur inconnue est survenue.";
+  }
 
-function emailFromUsername(username) {
+  switch (error.code) {
+    case "auth/user-not-found":
+      return "Pseudo ou mot de passe incorrect.";
+
+    case "auth/wrong-password":
+      return "Pseudo ou mot de passe incorrect.";
+
+    case "auth/invalid-login-credentials":
+      return "Pseudo ou mot de passe incorrect.";
+
+    case "auth/email-already-in-use":
+      return "Ce pseudo est déjà pris.";
+
+    case "auth/invalid-email":
+      return "Ce pseudo n'est pas valide.";
+
+    case "auth/weak-password":
+      return "Le mot de passe doit faire au moins 6 caractères.";
+
+    case "auth/operation-not-allowed":
+      return "La connexion par e-mail/mot de passe est désactivée dans Firebase.";
+
+    case "auth/network-request-failed":
+      return "Firebase n'arrive pas à se connecter à Internet.";
+
+    case "auth/too-many-requests":
+      return "Trop de tentatives. Attends un peu avant de réessayer.";
+
+    case "permission-denied":
+      return "Firebase refuse l'accès à ces données. Vérifie les règles Firestore.";
+
+    case "unavailable":
+      return "Firebase est temporairement indisponible.";
+
+    case "failed-precondition":
+      return "Firebase n'est pas correctement configuré.";
+
+    case "deadline-exceeded":
+      return "Firebase met trop de temps à répondre.";
+
+    default:
+      return error.message || "Une erreur est survenue.";
+  }
+}
+
+
+function isNetworkError(error) {
+  if (!error) return false;
+
+  const code = error.code || "";
+
   return (
-    username
-      .toLowerCase()
-      .trim()
-      .replace(/[^a-z0-9]/g, "")
-    + "@mesexposes-app.fake"
+    code === "unavailable" ||
+    code === "deadline-exceeded" ||
+    code === "failed-precondition" ||
+    code === "auth/network-request-failed" ||
+    code === "network-request-failed"
   );
 }
 
 
 // ------------------------------------------------------------
-// 8. CACHE LOCAL
+// 5. TIMEOUT POUR ÉVITER LE CHARGEMENT INFINI
 // ------------------------------------------------------------
 
-function cacheKey(uid) {
-  return "mes-exposes-cache-" + uid;
-}
+function withTimeout(promise, milliseconds = 12000) {
+  return Promise.race([
+    promise,
 
-function saveLocalUserData(uid, data) {
-  if (!uid || !data) return;
+    new Promise((_, reject) => {
+      setTimeout(() => {
+        const error = new Error(
+          "Firebase met trop de temps à répondre."
+        );
 
-  try {
-    localStorage.setItem(
-      cacheKey(uid),
-      JSON.stringify(data)
-    );
-  } catch (err) {
-    console.warn("Impossible de sauvegarder le cache local :", err);
-  }
-}
-
-function getLocalUserData(uid) {
-  if (!uid) return null;
-
-  try {
-    const raw = localStorage.getItem(cacheKey(uid));
-
-    if (!raw) return null;
-
-    return JSON.parse(raw);
-  } catch (err) {
-    console.warn("Cache local invalide :", err);
-    return null;
-  }
+        error.code = "deadline-exceeded";
+        reject(error);
+      }, milliseconds);
+    })
+  ]);
 }
 
 
 // ------------------------------------------------------------
-// 9. FIREBASE : PERSISTANCE AUTH
+// 6. EMAIL FABRIQUÉ À PARTIR DU PSEUDO
 // ------------------------------------------------------------
 
-async function configureFirebase() {
-  try {
-    await auth.setPersistence(
-      firebase.auth.Auth.Persistence.LOCAL
-    );
+function emailFromUsername(username) {
+  const cleaned = String(username || "")
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]/g, "");
 
-    console.log("Firebase Auth : persistance LOCAL activée.");
-  } catch (err) {
-    console.warn(
-      "Impossible d'activer la persistance Auth :",
-      err
-    );
-  }
-
-  // Firestore hors-ligne.
-  try {
-    await db.enablePersistence({
-      synchronizeTabs: true
-    });
-
-    console.log("Firestore : cache hors-ligne activé.");
-  } catch (err) {
-    // Plusieurs onglets peuvent empêcher la persistence.
-    // Ce n'est pas bloquant.
-    if (err.code === "failed-precondition") {
-      console.warn(
-        "Firestore : plusieurs onglets ouverts, cache multi-onglets indisponible."
-      );
-    } else if (err.code === "unimplemented") {
-      console.warn(
-        "Firestore : cache hors-ligne non supporté par ce navigateur."
-      );
-    } else {
-      console.warn(
-        "Firestore persistence :",
-        err
-      );
-    }
-  }
-
-  firebaseReady = true;
+  return cleaned + "@mesexposes-app.fake";
 }
 
 
 // ------------------------------------------------------------
-// 10. RECONNEXION FIRESTORE
+// 7. VALIDATION DU PSEUDO
 // ------------------------------------------------------------
 
-async function reconnectFirebase() {
-  if (!navigator.onLine) {
-    return false;
-  }
+function isValidUsername(username) {
+  if (!username) return false;
 
+  if (username.length < 2) return false;
+
+  if (username.length > 30) return false;
+
+  return /^[a-zA-Z0-9_-]+$/.test(username);
+}
+
+
+// ------------------------------------------------------------
+// 8. FIREBASE : ACTIVER LA CONNEXION
+// ------------------------------------------------------------
+
+async function activateFirebaseNetwork() {
   try {
     await db.enableNetwork();
-    console.log("Firebase : connexion réseau activée.");
-    return true;
-  } catch (err) {
-    console.warn(
-      "Firebase : impossible de réactiver le réseau.",
-      err
-    );
-
-    return false;
+  } catch (error) {
+    // Si Firebase est déjà connecté, cette erreur n'est pas grave.
+    console.warn("Activation réseau Firebase :", error);
   }
 }
 
 
 // ------------------------------------------------------------
-// 11. DETECTION INTERNET
+// 9. FIREBASE : LECTURE AVEC RETRY
 // ------------------------------------------------------------
 
-window.addEventListener("online", async () => {
-  console.log("Internet revenu.");
+async function getUserDocument(uid) {
+  if (!uid) {
+    throw new Error("Utilisateur Firebase introuvable.");
+  }
 
-  await reconnectFirebase();
+  const reference = db.collection("users").doc(uid);
 
-  if (auth.currentUser) {
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= 3; attempt++) {
     try {
-      const data = await getUserData(auth.currentUser.uid);
+      await activateFirebaseNetwork();
 
-      if (data) {
-        applyUserData(data);
-      }
-    } catch (err) {
-      console.warn(
-        "Impossible de resynchroniser les données.",
-        err
+      const snapshot = await withTimeout(
+        reference.get(),
+        10000
       );
+
+      return snapshot;
+    } catch (error) {
+      lastError = error;
+
+      console.warn(
+        `Lecture Firebase échouée (tentative ${attempt}/3)`,
+        error
+      );
+
+      if (attempt < 3) {
+        await sleep(800 * attempt);
+      }
     }
   }
-});
 
-window.addEventListener("offline", () => {
-  console.log("Navigateur hors-ligne.");
+  // Dernière tentative avec le cache local.
+  try {
+    const cachedSnapshot = await reference.get({
+      source: "cache"
+    });
 
-  // On ne déconnecte surtout PAS l'utilisateur.
-});
+    return cachedSnapshot;
+  } catch (cacheError) {
+    console.warn("Cache Firebase indisponible :", cacheError);
+  }
+
+  throw lastError || new Error("Impossible de contacter Firebase.");
+}
+
+
+// ------------------------------------------------------------
+// 10. FIREBASE : SAUVEGARDE AVEC RETRY
+// ------------------------------------------------------------
+
+async function updateUserDocument(uid, data) {
+  if (!uid) {
+    throw new Error("Utilisateur Firebase introuvable.");
+  }
+
+  const reference = db.collection("users").doc(uid);
+
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      await activateFirebaseNetwork();
+
+      await withTimeout(
+        reference.update(data),
+        12000
+      );
+
+      return true;
+    } catch (error) {
+      lastError = error;
+
+      console.warn(
+        `Sauvegarde Firebase échouée (tentative ${attempt}/3)`,
+        error
+      );
+
+      if (attempt < 3) {
+        await sleep(900 * attempt);
+      }
+    }
+  }
+
+  throw lastError || new Error("Impossible d'enregistrer les données.");
+}
+
+
+// ------------------------------------------------------------
+// 11. FIREBASE : CRÉATION DU PROFIL
+// ------------------------------------------------------------
+
+async function createUserDocument(uid, username) {
+  const reference = db.collection("users").doc(uid);
+
+  await withTimeout(
+    reference.set({
+      username: username,
+      profile: {
+        firstname: "",
+        lastname: "",
+        classe: ""
+      },
+      exposes: [],
+      createdAt: firebase.firestore.FieldValue.serverTimestamp()
+    }),
+    12000
+  );
+}
 
 
 // ------------------------------------------------------------
 // 12. NAVIGATION CONNEXION / INSCRIPTION
 // ------------------------------------------------------------
 
-document.getElementById("show-signup").addEventListener("click", e => {
-  e.preventDefault();
+document.getElementById("show-signup").addEventListener("click", event => {
+  event.preventDefault();
 
   document.getElementById("login-error").textContent = "";
 
   showScreen(signupScreen);
 });
 
-document.getElementById("show-login").addEventListener("click", e => {
-  e.preventDefault();
+
+document.getElementById("show-login").addEventListener("click", event => {
+  event.preventDefault();
 
   document.getElementById("signup-error").textContent = "";
 
@@ -288,13 +362,13 @@ document.getElementById("show-login").addEventListener("click", e => {
 
 
 // ------------------------------------------------------------
-// 13. CREATION DE COMPTE
+// 13. INSCRIPTION
 // ------------------------------------------------------------
 
 document.getElementById("signup-form").addEventListener(
   "submit",
-  async e => {
-    e.preventDefault();
+  async event => {
+    event.preventDefault();
 
     const username = document
       .getElementById("signup-username")
@@ -305,98 +379,65 @@ document.getElementById("signup-form").addEventListener(
       .getElementById("signup-password")
       .value;
 
-    const errorEl = document.getElementById("signup-error");
+    const errorElement = document.getElementById("signup-error");
 
-    errorEl.textContent = "";
+    errorElement.textContent = "";
 
-    if (!username || !password) {
-      errorEl.textContent =
-        "Remplis le pseudo et le mot de passe.";
+    if (!isValidUsername(username)) {
+      errorElement.textContent =
+        "Le pseudo doit contenir 2 à 30 caractères : lettres, chiffres, _ ou -.";
+
       return;
     }
 
-    if (username.length < 3) {
-      errorEl.textContent =
-        "Le pseudo doit faire au moins 3 caractères.";
+    if (!password) {
+      errorElement.textContent =
+        "Remplis ton mot de passe.";
+
       return;
     }
 
     if (password.length < 6) {
-      errorEl.textContent =
-        "Le mot de passe doit faire 6 caractères minimum.";
+      errorElement.textContent =
+        "Le mot de passe doit faire au moins 6 caractères.";
+
       return;
     }
 
-    if (!navigator.onLine) {
-      errorEl.textContent =
-        "Tu es actuellement hors connexion. Connecte-toi à Internet pour créer ton compte.";
-      return;
-    }
+    const email = emailFromUsername(username);
 
     showLoading(true, "Création du compte...");
 
     try {
-      await auth.setPersistence(
-        firebase.auth.Auth.Persistence.LOCAL
+      await activateFirebaseNetwork();
+
+      const credential = await withTimeout(
+        auth.createUserWithEmailAndPassword(
+          email,
+          password
+        ),
+        12000
       );
 
-      const email = emailFromUsername(username);
-
-      const cred =
-        await withTimeout(
-          auth.createUserWithEmailAndPassword(
-            email,
-            password
-          )
-        );
-
-      const userData = {
-        username: username,
-        profile: {
-          firstname: "",
-          lastname: "",
-          classe: ""
-        },
-        exposes: []
-      };
-
-      await withTimeout(
-        db
-          .collection("users")
-          .doc(cred.user.uid)
-          .set(userData)
-      );
-
-      saveLocalUserData(
-        cred.user.uid,
-        userData
-      );
-
-      console.log("Compte créé.");
-
-      showLoading(false);
-
-      // onAuthStateChanged ouvrira automatiquement le dashboard
-
-    } catch (err) {
-      console.error("Erreur inscription :", err);
-
-      showLoading(false);
-
-      if (err.code === "auth/email-already-in-use") {
-        errorEl.textContent =
-          "Ce pseudo est déjà pris.";
-      } else if (err.code === "auth/invalid-email") {
-        errorEl.textContent =
-          "Ce pseudo n'est pas valide.";
-      } else if (err.code === "app/timeout") {
-        errorEl.textContent =
-          "Firebase met trop de temps à répondre. Vérifie ta connexion.";
-      } else {
-        errorEl.textContent =
-          "Erreur : " +
-          (err.message || "Impossible de créer le compte.");
+      if (!credential.user) {
+        throw new Error("Firebase n'a pas créé l'utilisateur.");
       }
+
+      await createUserDocument(
+        credential.user.uid,
+        username
+      );
+
+      // Firebase connectera automatiquement l'utilisateur.
+      // onAuthStateChanged affichera ensuite le dashboard.
+
+    } catch (error) {
+      console.error("Erreur inscription :", error);
+
+      showLoading(false);
+
+      errorElement.textContent =
+        "Erreur : " + getErrorMessage(error);
     }
   }
 );
@@ -408,8 +449,8 @@ document.getElementById("signup-form").addEventListener(
 
 document.getElementById("login-form").addEventListener(
   "submit",
-  async e => {
-    e.preventDefault();
+  async event => {
+    event.preventDefault();
 
     const username = document
       .getElementById("login-username")
@@ -420,208 +461,172 @@ document.getElementById("login-form").addEventListener(
       .getElementById("login-password")
       .value;
 
-    const errorEl = document.getElementById("login-error");
+    const errorElement = document.getElementById("login-error");
 
-    errorEl.textContent = "";
+    errorElement.textContent = "";
 
     if (!username || !password) {
-      errorEl.textContent =
+      errorElement.textContent =
         "Entre ton pseudo et ton mot de passe.";
+
       return;
     }
 
-    if (!navigator.onLine) {
-      errorEl.textContent =
-        "Tu es hors connexion. Une première connexion nécessite Internet.";
+    if (!isValidUsername(username)) {
+      errorElement.textContent =
+        "Pseudo ou mot de passe incorrect.";
+
       return;
     }
 
     showLoading(true, "Connexion...");
 
     try {
-      await auth.setPersistence(
-        firebase.auth.Auth.Persistence.LOCAL
-      );
+      await activateFirebaseNetwork();
 
       await withTimeout(
         auth.signInWithEmailAndPassword(
           emailFromUsername(username),
           password
-        )
+        ),
+        12000
       );
 
-      console.log("Connexion réussie.");
+      // onAuthStateChanged prend ensuite le relais.
 
-      // onAuthStateChanged s'occupe du dashboard
-
-    } catch (err) {
-      console.error("Erreur connexion :", err);
+    } catch (error) {
+      console.error("Erreur connexion :", error);
 
       showLoading(false);
 
-      if (
-        err.code === "auth/user-not-found" ||
-        err.code === "auth/wrong-password" ||
-        err.code === "auth/invalid-credential"
-      ) {
-        errorEl.textContent =
-          "Pseudo ou mot de passe incorrect.";
-      } else if (err.code === "auth/too-many-requests") {
-        errorEl.textContent =
-          "Trop de tentatives. Réessaie dans quelques instants.";
-      } else if (err.code === "app/timeout") {
-        errorEl.textContent =
-          "Firebase ne répond pas. Vérifie ta connexion Internet.";
-      } else {
-        errorEl.textContent =
-          "Erreur Firebase : " +
-          (err.message || "Connexion impossible.");
-      }
+      errorElement.textContent =
+        getErrorMessage(error);
     }
   }
 );
 
 
 // ------------------------------------------------------------
-// 15. DECONNEXION
+// 15. DÉCONNEXION
 // ------------------------------------------------------------
 
-document
-  .getElementById("logout-btn")
-  .addEventListener("click", async () => {
+document.getElementById("logout-btn").addEventListener(
+  "click",
+  async () => {
+
+    showLoading(true, "Déconnexion...");
 
     try {
-      await auth.signOut();
-
-      currentUserUid = null;
-      lastExposesCache = [];
-      pendingFile = null;
-      editingId = null;
+      await withTimeout(
+        auth.signOut(),
+        10000
+      );
+    } catch (error) {
+      console.error("Erreur déconnexion :", error);
 
       showLoading(false);
-      showScreen(loginScreen);
 
-    } catch (err) {
-      console.error(
-        "Erreur de déconnexion :",
-        err
+      alert(
+        "Impossible de se déconnecter : " +
+        getErrorMessage(error)
       );
     }
-  });
+  }
+);
 
 
 // ------------------------------------------------------------
-// 16. CHARGEMENT DONNEES UTILISATEUR
+// 16. IDENTITÉ
 // ------------------------------------------------------------
 
-async function getUserData(uid) {
-  if (!uid) return null;
+function updateIdentityBadge(profile) {
+  const firstname = profile?.firstname || "";
+  const lastname = profile?.lastname || "";
+  const classe = profile?.classe || "";
 
-  // Toujours essayer le serveur si Internet est disponible.
-  if (navigator.onLine) {
-    try {
-      await reconnectFirebase();
+  const name = [firstname, lastname]
+    .filter(Boolean)
+    .join(" ");
 
-      const doc = await withTimeout(
-        db
-          .collection("users")
-          .doc(uid)
-          .get()
-      );
+  document.getElementById("identity-name").textContent =
+    name || "Ton prénom Nom";
 
-      if (doc.exists) {
-        const data = doc.data();
-
-        saveLocalUserData(uid, data);
-
-        return data;
-      }
-    } catch (err) {
-      console.warn(
-        "Impossible de récupérer Firebase. Utilisation du cache.",
-        err
-      );
-    }
-  }
-
-  // Si le serveur ne répond pas : cache local.
-  const cached = getLocalUserData(uid);
-
-  if (cached) {
-    console.log(
-      "Données récupérées depuis le cache local."
-    );
-
-    return cached;
-  }
-
-  // Dernière tentative depuis le cache Firestore.
-  try {
-    const doc = await withTimeout(
-      db
-        .collection("users")
-        .doc(uid)
-        .get({
-          source: "cache"
-        }),
-      3000
-    );
-
-    if (doc.exists) {
-      const data = doc.data();
-
-      saveLocalUserData(uid, data);
-
-      return data;
-    }
-  } catch (err) {
-    console.warn(
-      "Aucune donnée locale Firestore disponible.",
-      err
-    );
-  }
-
-  return null;
+  document.getElementById("identity-class").textContent =
+    classe || "Classe";
 }
 
 
 // ------------------------------------------------------------
-// 17. APPLICATION DES DONNEES SUR LE DASHBOARD
+// 17. CHARGEMENT DU PROFIL
 // ------------------------------------------------------------
 
-function applyUserData(data) {
-  const safeData = data || {};
+async function loadUserInterface(user) {
+  if (!user) {
+    return;
+  }
 
-  const username =
-    safeData.username || "Élève";
+  currentUserUid = user.uid;
 
-  const profile =
-    safeData.profile || {};
+  let snapshot;
 
-  const exposes =
-    Array.isArray(safeData.exposes)
-      ? safeData.exposes
-      : [];
+  try {
+    snapshot = await getUserDocument(user.uid);
+  } catch (error) {
+    console.error("Impossible de charger le profil :", error);
 
-  document.getElementById(
-    "welcome-name"
-  ).textContent = username;
+    showLoading(false);
 
-  document.getElementById(
-    "profile-username"
-  ).value = username;
+    showScreen(studentScreen);
 
-  document.getElementById(
-    "profile-firstname"
-  ).value = profile.firstname || "";
+    const errorElement = document.getElementById("profile-error");
 
-  document.getElementById(
-    "profile-lastname"
-  ).value = profile.lastname || "";
+    if (errorElement) {
+      errorElement.textContent =
+        "Firebase n'arrive pas à charger tes données. " +
+        getErrorMessage(error);
+    }
 
-  document.getElementById(
-    "profile-class"
-  ).value = profile.classe || "";
+    return;
+  }
+
+  let data = snapshot.exists
+    ? snapshot.data()
+    : null;
+
+  if (!data) {
+    data = {
+      username: "Élève",
+      profile: {
+        firstname: "",
+        lastname: "",
+        classe: ""
+      },
+      exposes: []
+    };
+  }
+
+  const username = data.username || "Élève";
+
+  const profile = data.profile || {};
+
+  const exposes = Array.isArray(data.exposes)
+    ? data.exposes
+    : [];
+
+  document.getElementById("welcome-name").textContent =
+    username;
+
+  document.getElementById("profile-username").value =
+    username;
+
+  document.getElementById("profile-firstname").value =
+    profile.firstname || "";
+
+  document.getElementById("profile-lastname").value =
+    profile.lastname || "";
+
+  document.getElementById("profile-class").value =
+    profile.classe || "";
 
   updateIdentityBadge(profile);
 
@@ -630,186 +635,153 @@ function applyUserData(data) {
   lastExposesCache = exposes;
 
   renderExposes(exposes);
-}
 
-
-// ------------------------------------------------------------
-// 18. AUTH STATE
-// ------------------------------------------------------------
-
-auth.onAuthStateChanged(async user => {
-
-  console.log(
-    "Auth state :",
-    user ? user.email : "déconnecté"
-  );
-
-  if (!user) {
-    currentUserUid = null;
-
-    showLoading(false);
-    showScreen(loginScreen);
-
-    return;
-  }
-
-  currentUserUid = user.uid;
-
-  // IMPORTANT :
-  // on affiche le dashboard immédiatement.
-  // Cela évite de rester bloqué sur "Chargement".
   showScreen(studentScreen);
 
-  showLoading(true, "Chargement de ton espace...");
-
-  try {
-
-    const data = await getUserData(user.uid);
-
-    if (data) {
-      applyUserData(data);
-    } else {
-      // Même si Firestore ne répond pas,
-      // on laisse l'utilisateur entrer.
-      applyUserData({
-        username: "Élève",
-        profile: {
-          firstname: "",
-          lastname: "",
-          classe: ""
-        },
-        exposes: []
-      });
-
-      console.warn(
-        "Profil Firebase indisponible."
-      );
-    }
-
-  } catch (err) {
-
-    console.error(
-      "Erreur chargement utilisateur :",
-      err
-    );
-
-    // Surtout :
-    // NE PAS déconnecter l'utilisateur.
-    const cached = getLocalUserData(user.uid);
-
-    if (cached) {
-      applyUserData(cached);
-    }
-
-  } finally {
-
-    showLoading(false);
-
-  }
-});
-
-
-// ------------------------------------------------------------
-// 19. BADGE IDENTITE
-// ------------------------------------------------------------
-
-function updateIdentityBadge(profile) {
-
-  const name = [
-    profile.firstname,
-    profile.lastname
-  ]
-    .filter(Boolean)
-    .join(" ");
-
-  document.getElementById(
-    "identity-name"
-  ).textContent =
-    name || "Ton prénom Nom";
-
-  document.getElementById(
-    "identity-class"
-  ).textContent =
-    profile.classe || "Classe";
+  showLoading(false);
 }
 
 
 // ------------------------------------------------------------
-// 20. MENU
+// 18. FIREBASE AUTH PERSISTANT
 // ------------------------------------------------------------
 
-document
-  .querySelectorAll(".menu-item")
-  .forEach(btn => {
+async function initializeAuthentication() {
+  try {
+    await auth.setPersistence(
+      firebase.auth.Auth.Persistence.LOCAL
+    );
+  } catch (error) {
+    console.warn(
+      "Impossible d'activer la persistance Firebase :",
+      error
+    );
+  }
 
-    btn.addEventListener("click", () => {
+  auth.onAuthStateChanged(async user => {
 
-      document
-        .querySelectorAll(".menu-item")
-        .forEach(b =>
-          b.classList.remove("active")
-        );
+    if (user) {
+      await loadUserInterface(user);
+    } else {
+      currentUserUid = null;
 
-      btn.classList.add("active");
+      showLoading(false);
 
-      document
-        .querySelectorAll(".tab-panel")
-        .forEach(p =>
-          p.classList.add("hidden")
-        );
-
-      const target =
-        document.getElementById(
-          "tab-" + btn.dataset.tab
-        );
-
-      if (target) {
-        target.classList.remove("hidden");
-      }
-    });
-
+      showScreen(loginScreen);
+    }
   });
+
+  authListenerStarted = true;
+}
+
+
+// ------------------------------------------------------------
+// 19. DÉMARRAGE
+// ------------------------------------------------------------
+
+async function startApplication() {
+  try {
+    showLoading(true, "Connexion à Firebase...");
+
+    await activateFirebaseNetwork();
+
+    await initializeAuthentication();
+
+    firebaseReady = true;
+
+  } catch (error) {
+    console.error("Erreur démarrage :", error);
+
+    firebaseReady = false;
+
+    showLoading(false);
+
+    showScreen(loginScreen);
+
+    const errorElement =
+      document.getElementById("login-error");
+
+    if (errorElement) {
+      errorElement.textContent =
+        "Firebase n'est pas disponible : " +
+        getErrorMessage(error);
+    }
+  }
+}
+
+
+// ------------------------------------------------------------
+// 20. MENU / ONGLETS
+// ------------------------------------------------------------
+
+document.querySelectorAll(".menu-item").forEach(button => {
+
+  button.addEventListener("click", () => {
+
+    document
+      .querySelectorAll(".menu-item")
+      .forEach(item => {
+        item.classList.remove("active");
+      });
+
+    button.classList.add("active");
+
+    document
+      .querySelectorAll(".tab-panel")
+      .forEach(panel => {
+        panel.classList.add("hidden");
+      });
+
+    const tabName = button.dataset.tab;
+
+    const panel =
+      document.getElementById("tab-" + tabName);
+
+    if (panel) {
+      panel.classList.remove("hidden");
+    }
+  });
+
+});
 
 
 // ------------------------------------------------------------
 // 21. MODE SOMBRE
 // ------------------------------------------------------------
 
-const themeBtn =
+const themeButton =
   document.getElementById("theme-toggle");
 
-themeBtn.addEventListener("click", () => {
 
-  document.body.classList.toggle("dark");
+themeButton.addEventListener("click", () => {
 
-  const isDark =
-    document.body.classList.contains("dark");
+  const dark =
+    document.body.classList.toggle("dark");
 
   localStorage.setItem(
     "exposes-theme",
-    isDark ? "dark" : "light"
+    dark ? "dark" : "light"
   );
 
-  themeBtn.textContent =
-    isDark
+  themeButton.textContent =
+    dark
       ? "☀️ Mode clair"
       : "🌙 Mode sombre";
 });
 
+
 function applyStoredTheme() {
 
-  const isDark =
-    localStorage.getItem(
-      "exposes-theme"
-    ) === "dark";
+  const dark =
+    localStorage.getItem("exposes-theme") === "dark";
 
   document.body.classList.toggle(
     "dark",
-    isDark
+    dark
   );
 
-  themeBtn.textContent =
-    isDark
+  themeButton.textContent =
+    dark
       ? "☀️ Mode clair"
       : "🌙 Mode sombre";
 }
@@ -831,20 +803,33 @@ const fileDropText =
 
 function handleFile(file) {
 
-  if (!file) return;
+  if (!file) {
+    return;
+  }
 
-  // Limite actuelle conservée.
+  // Limite conservée à environ 700 Ko.
+  // On vérifie aussi la taille finale du document avant Firebase.
   if (file.size > 700 * 1024) {
 
     alert(
-      "Ce fichier est trop lourd (maximum environ 700 Ko)."
+      "Ce fichier est trop lourd. " +
+      "La limite est d'environ 700 Ko."
     );
+
+    fileInput.value = "";
 
     return;
   }
 
-  const reader =
-    new FileReader();
+  const reader = new FileReader();
+
+  reader.onerror = () => {
+
+    alert(
+      "Impossible de lire ce fichier."
+    );
+
+  };
 
   reader.onload = () => {
 
@@ -862,13 +847,6 @@ function handleFile(file) {
     );
   };
 
-  reader.onerror = () => {
-
-    alert(
-      "Impossible de lire ce fichier."
-    );
-  };
-
   reader.readAsDataURL(file);
 }
 
@@ -876,17 +854,16 @@ function handleFile(file) {
 fileInput.addEventListener(
   "change",
   () => {
-    handleFile(
-      fileInput.files[0]
-    );
+    handleFile(fileInput.files[0]);
   }
 );
 
 
 fileDropLabel.addEventListener(
   "dragover",
-  e => {
-    e.preventDefault();
+  event => {
+
+    event.preventDefault();
 
     fileDropLabel.classList.add(
       "dragover"
@@ -898,6 +875,7 @@ fileDropLabel.addEventListener(
 fileDropLabel.addEventListener(
   "dragleave",
   () => {
+
     fileDropLabel.classList.remove(
       "dragover"
     );
@@ -907,23 +885,24 @@ fileDropLabel.addEventListener(
 
 fileDropLabel.addEventListener(
   "drop",
-  e => {
+  event => {
 
-    e.preventDefault();
+    event.preventDefault();
 
     fileDropLabel.classList.remove(
       "dragover"
     );
 
-    handleFile(
-      e.dataTransfer.files[0]
-    );
+    const file =
+      event.dataTransfer.files[0];
+
+    handleFile(file);
   }
 );
 
 
 // ------------------------------------------------------------
-// 23. RESET FORMULAIRE EXPOSE
+// 23. RESET FORMULAIRE EXPOSÉ
 // ------------------------------------------------------------
 
 function resetExposeForm() {
@@ -937,7 +916,10 @@ function resetExposeForm() {
     .value = "";
 
   pendingFile = null;
+
   editingId = null;
+
+  fileInput.value = "";
 
   fileDropText.textContent =
     "📎 Joindre une photo ou un fichier (ou glisse-le ici)";
@@ -948,8 +930,7 @@ function resetExposeForm() {
 
   document
     .getElementById("expose-submit-btn")
-    .textContent =
-    "Ajouter l'exposé";
+    .textContent = "Ajouter l'exposé";
 
   document
     .getElementById("expose-cancel-btn")
@@ -966,7 +947,7 @@ document
 
 
 // ------------------------------------------------------------
-// 24. RECUPERER LES EXPOSES
+// 24. RÉCUPÉRER LES EXPOSÉS
 // ------------------------------------------------------------
 
 async function getExposesFromServer() {
@@ -974,111 +955,126 @@ async function getExposesFromServer() {
   const user = auth.currentUser;
 
   if (!user) {
+    throw new Error(
+      "Tu n'es plus connecté."
+    );
+  }
+
+  const snapshot =
+    await getUserDocument(user.uid);
+
+  if (!snapshot.exists) {
     return [];
   }
 
   const data =
-    await getUserData(user.uid);
+    snapshot.data() || {};
 
-  if (!data) {
-    return lastExposesCache || [];
-  }
-
-  const exposes =
-    Array.isArray(data.exposes)
-      ? data.exposes
-      : [];
-
-  lastExposesCache = exposes;
-
-  return exposes;
+  return Array.isArray(data.exposes)
+    ? data.exposes
+    : [];
 }
 
 
 // ------------------------------------------------------------
-// 25. SAUVEGARDER LES EXPOSES
+// 25. VÉRIFICATION TAILLE FIRESTORE
+// ------------------------------------------------------------
+
+function checkFirestoreDataSize(exposes) {
+
+  try {
+
+    const json =
+      JSON.stringify(exposes);
+
+    const bytes =
+      new Blob([json]).size;
+
+    // Firestore limite les documents à environ 1 MiB.
+    // On garde une marge de sécurité.
+    const safeLimit =
+      900 * 1024;
+
+    if (bytes > safeLimit) {
+
+      return {
+        ok: false,
+        bytes
+      };
+    }
+
+    return {
+      ok: true,
+      bytes
+    };
+
+  } catch (error) {
+
+    console.error(
+      "Erreur calcul taille :",
+      error
+    );
+
+    return {
+      ok: false,
+      bytes: Infinity
+    };
+  }
+}
+
+
+// ------------------------------------------------------------
+// 26. SAUVEGARDER LES EXPOSÉS
 // ------------------------------------------------------------
 
 async function saveExposesToServer(exposes) {
 
-  const user =
-    auth.currentUser;
+  const user = auth.currentUser;
 
   if (!user) {
+
     alert(
-      "Tu n'es plus connecté à ton compte."
+      "Tu n'es plus connecté. Recharge la page."
     );
 
     return false;
   }
 
-  const uid = user.uid;
+  const sizeCheck =
+    checkFirestoreDataSize(exposes);
 
-  const dataToSave = {
-    exposes: exposes
-  };
+  if (!sizeCheck.ok) {
 
-  // Mise à jour immédiate du cache.
-  const currentData =
-    getLocalUserData(uid) || {};
+    alert(
+      "Tes exposés prennent trop de place dans Firebase.\n\n" +
+      "Supprime quelques anciennes pièces jointes " +
+      "ou utilise des fichiers plus légers."
+    );
 
-  saveLocalUserData(uid, {
-    ...currentData,
-    ...dataToSave
-  });
-
-  lastExposesCache = exposes;
+    return false;
+  }
 
   try {
 
-    if (navigator.onLine) {
-      await reconnectFirebase();
-    }
-
-    // set + merge est plus robuste que update.
-    await withTimeout(
-      db
-        .collection("users")
-        .doc(uid)
-        .set(
-          dataToSave,
-          { merge: true }
-        )
-    );
-
-    console.log(
-      "Exposés sauvegardés sur Firebase."
+    await updateUserDocument(
+      user.uid,
+      {
+        exposes: exposes
+      }
     );
 
     return true;
 
-  } catch (err) {
+  } catch (error) {
 
     console.error(
-      "Erreur sauvegarde Firebase :",
-      err
+      "Erreur sauvegarde exposés :",
+      error
     );
 
-    // Les données restent dans le cache local.
-    // On ne bloque donc plus complètement l'utilisateur.
-
-    if (
-      err.code === "app/timeout" ||
-      err.code === "unavailable" ||
-      err.code === "failed-precondition"
-    ) {
-
-      alert(
-        "Firebase ne répond pas actuellement.\n\n" +
-        "Ton exposé a été conservé localement et Firebase pourra le synchroniser lorsque la connexion reviendra."
-      );
-
-      return true;
-    }
-
     alert(
-      "Erreur d'enregistrement : " +
-      (err.message || "Erreur Firebase.")
+      "Erreur d'enregistrement :\n\n" +
+      getErrorMessage(error)
     );
 
     return false;
@@ -1087,16 +1083,16 @@ async function saveExposesToServer(exposes) {
 
 
 // ------------------------------------------------------------
-// 26. AJOUT / MODIFICATION EXPOSE
+// 27. AJOUT / MODIFICATION EXPOSÉ
 // ------------------------------------------------------------
 
 document
   .getElementById("expose-form")
   .addEventListener(
     "submit",
-    async e => {
+    async event => {
 
-      e.preventDefault();
+      event.preventDefault();
 
       const title =
         document
@@ -1138,7 +1134,7 @@ document
       if (!auth.currentUser) {
 
         alert(
-          "Tu dois être connecté."
+          "Tu n'es plus connecté à Firebase."
         );
 
         return;
@@ -1160,89 +1156,117 @@ document
 
           const item =
             exposes.find(
-              x => Number(x.id) === Number(editingId)
+              expose =>
+                Number(expose.id) ===
+                Number(editingId)
             );
 
           if (!item) {
 
-            showLoading(false);
-
-            alert(
-              "Impossible de retrouver cet exposé."
+            throw new Error(
+              "Cet exposé n'existe plus."
             );
-
-            return;
           }
 
-          Object.assign(
-            item,
-            {
-              title,
-              subject,
-              description,
-              due,
-              status
-            }
-          );
+          item.title =
+            title;
+
+          item.subject =
+            subject;
+
+          item.description =
+            description;
+
+          item.due =
+            due;
+
+          item.status =
+            status;
 
           if (pendingFile) {
-            item.file = pendingFile;
+            item.file =
+              pendingFile;
           }
 
         } else {
 
           exposes.push({
+
             id: Date.now(),
-            title,
-            subject,
-            description,
-            due,
-            status,
+
+            title: title,
+
+            subject: subject,
+
+            description: description,
+
+            due: due,
+
+            status: status,
+
             file: pendingFile
+              ? pendingFile
+              : null
           });
         }
 
-        const ok =
+        const saved =
           await saveExposesToServer(
             exposes
           );
 
-        if (!ok) {
-          showLoading(false);
+        if (!saved) {
           return;
         }
 
         resetExposeForm();
 
+        lastExposesCache =
+          exposes;
+
         renderExposes(
           exposes
         );
 
-        showLoading(false);
-
-      } catch (err) {
+      } catch (error) {
 
         console.error(
-          "Erreur exposé :",
-          err
+          "Erreur ajout/modification :",
+          error
         );
-
-        showLoading(false);
 
         alert(
-          "Impossible d'enregistrer l'exposé.\n\n" +
-          (err.message || "")
+          "Impossible d'enregistrer l'exposé :\n\n" +
+          getErrorMessage(error)
         );
+
+      } finally {
+
+        showLoading(false);
       }
     }
   );
 
 
 // ------------------------------------------------------------
-// 27. MODIFIER UN EXPOSE
+// 28. MODIFIER UN EXPOSÉ
 // ------------------------------------------------------------
 
 async function startEdit(id) {
+
+  if (!auth.currentUser) {
+
+    alert(
+      "Tu n'es plus connecté."
+    );
+
+    return;
+  }
+
+  showLoading(
+    true,
+    "Chargement de l'exposé..."
+  );
 
   try {
 
@@ -1251,17 +1275,22 @@ async function startEdit(id) {
 
     const item =
       exposes.find(
-        x => Number(x.id) === Number(id)
+        expose =>
+          Number(expose.id) ===
+          Number(id)
       );
 
     if (!item) {
+
       alert(
         "Exposé introuvable."
       );
+
       return;
     }
 
-    editingId = Number(id);
+    editingId =
+      Number(id);
 
     document
       .getElementById("expose-id")
@@ -1270,48 +1299,47 @@ async function startEdit(id) {
     document
       .getElementById("expose-title")
       .value =
-      item.title || "";
+        item.title || "";
 
     document
       .getElementById("expose-subject")
       .value =
-      item.subject || "";
+        item.subject || "";
 
     document
       .getElementById("expose-description")
       .value =
-      item.description || "";
+        item.description || "";
 
     document
       .getElementById("expose-due")
       .value =
-      item.due || "";
+        item.due || "";
 
     document
       .getElementById("expose-status")
       .value =
-      item.status || "En cours";
+        item.status || "En cours";
 
     document
       .getElementById("expose-submit-btn")
       .textContent =
-      "Enregistrer les modifications";
+        "Enregistrer les modifications";
 
     document
       .getElementById("expose-cancel-btn")
-      .classList.remove("hidden");
-
-    // Important :
-    // on ne met PAS l'ancien fichier dans pendingFile.
-    // Il sera conservé automatiquement si aucun nouveau fichier
-    // n'est choisi.
+      .classList.remove(
+        "hidden"
+      );
 
     if (item.file) {
+
+      pendingFile = null;
 
       fileDropText.textContent =
         "✅ " +
         item.file.name +
-        " (conservé si tu ne changes pas de fichier)";
+        " (garde le même fichier si tu ne changes rien)";
 
       fileDropLabel.classList.add(
         "has-file"
@@ -1325,22 +1353,27 @@ async function startEdit(id) {
         block: "center"
       });
 
-  } catch (err) {
+  } catch (error) {
 
     console.error(
       "Erreur modification :",
-      err
+      error
     );
 
     alert(
-      "Impossible d'ouvrir cet exposé."
+      "Impossible de charger l'exposé :\n\n" +
+      getErrorMessage(error)
     );
+
+  } finally {
+
+    showLoading(false);
   }
 }
 
 
 // ------------------------------------------------------------
-// 28. STATUT
+// 29. STATUT
 // ------------------------------------------------------------
 
 function statusClass(status) {
@@ -1358,12 +1391,14 @@ function statusClass(status) {
 
 
 // ------------------------------------------------------------
-// 29. DATE DE RENDU
+// 30. DATE DE RENDU
 // ------------------------------------------------------------
 
 function dueInfo(due) {
 
-  if (!due) return "";
+  if (!due) {
+    return "";
+  }
 
   const today =
     new Date();
@@ -1383,14 +1418,22 @@ function dueInfo(due) {
       (
         dueDate - today
       ) /
-      (1000 * 60 * 60 * 24)
+      (
+        1000 *
+        60 *
+        60 *
+        24
+      )
     );
+
+  const safeDate =
+    escapeHtml(due);
 
   if (diffDays < 0) {
 
     return `
       <div class="due-info due-late">
-        ⏰ En retard (${escapeHtml(due)})
+        ⏰ En retard (${safeDate})
       </div>
     `;
   }
@@ -1408,21 +1451,21 @@ function dueInfo(due) {
 
     return `
       <div class="due-info due-soon">
-        ⏰ Dans ${diffDays} jour(s) (${escapeHtml(due)})
+        ⏰ Dans ${diffDays} jour(s) (${safeDate})
       </div>
     `;
   }
 
   return `
     <div class="due-info due-ok">
-      📅 Rendu prévu le ${escapeHtml(due)}
+      📅 Rendu prévu le ${safeDate}
     </div>
   `;
 }
 
 
 // ------------------------------------------------------------
-// 30. FILTRE MATIERES
+// 31. FILTRE MATIÈRES
 // ------------------------------------------------------------
 
 function updateSubjectFilter(exposes) {
@@ -1435,23 +1478,34 @@ function updateSubjectFilter(exposes) {
   const current =
     select.value;
 
-  const subjects =
-    [
-      ...new Set(
-        exposes
-          .map(e => e.subject)
-          .filter(Boolean)
-      )
-    ];
+  const subjects = [
+    ...new Set(
+      exposes
+        .map(expose => expose.subject)
+        .filter(Boolean)
+    )
+  ].sort();
 
   select.innerHTML =
-    '<option value="">Toutes les matières</option>' +
-    subjects
-      .map(
-        s =>
-          `<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`
-      )
-      .join("");
+    '<option value="">Toutes les matières</option>';
+
+  subjects.forEach(subject => {
+
+    const option =
+      document.createElement(
+        "option"
+      );
+
+    option.value =
+      subject;
+
+    option.textContent =
+      subject;
+
+    select.appendChild(
+      option
+    );
+  });
 
   select.value =
     subjects.includes(current)
@@ -1461,7 +1515,7 @@ function updateSubjectFilter(exposes) {
 
 
 // ------------------------------------------------------------
-// 31. AFFICHER LES EXPOSES
+// 32. AFFICHAGE EXPOSÉS
 // ------------------------------------------------------------
 
 function renderExposes(exposes) {
@@ -1478,17 +1532,22 @@ function renderExposes(exposes) {
       "exposes-list"
     );
 
-  document.getElementById(
-    "stat-count"
-  ).textContent =
-    exposes.length;
+  document
+    .getElementById(
+      "stat-count"
+    )
+    .textContent =
+      exposes.length;
 
-  document.getElementById(
-    "stat-done"
-  ).textContent =
-    exposes.filter(
-      e => e.status === "Rendu"
-    ).length;
+  document
+    .getElementById(
+      "stat-done"
+    )
+    .textContent =
+      exposes.filter(
+        expose =>
+          expose.status === "Rendu"
+      ).length;
 
   renderBadges(
     exposes.length
@@ -1500,58 +1559,62 @@ function renderExposes(exposes) {
 
   const searchTerm =
     document
-      .getElementById("search-input")
+      .getElementById(
+        "search-input"
+      )
       .value
       .trim()
       .toLowerCase();
 
   const subjectFilter =
     document
-      .getElementById("filter-subject")
+      .getElementById(
+        "filter-subject"
+      )
       .value;
 
   const filtered =
-    exposes.filter(exp => {
+    exposes.filter(
+      expose => {
 
-      const title =
-        String(
-          exp.title || ""
-        ).toLowerCase();
+        const title =
+          String(
+            expose.title || ""
+          ).toLowerCase();
 
-      const subject =
-        exp.subject || "";
+        const subject =
+          String(
+            expose.subject || ""
+          );
 
-      const matchesSearch =
-        !searchTerm ||
-        title.includes(searchTerm);
+        const matchesSearch =
+          !searchTerm ||
+          title.includes(
+            searchTerm
+          );
 
-      const matchesSubject =
-        !subjectFilter ||
-        subject === subjectFilter;
+        const matchesSubject =
+          !subjectFilter ||
+          subject === subjectFilter;
 
-      return (
-        matchesSearch &&
-        matchesSubject
-      );
-    });
+        return (
+          matchesSearch &&
+          matchesSubject
+        );
+      }
+    );
 
   if (filtered.length === 0) {
 
     list.innerHTML =
-      `<p class="empty-msg">
-        ${
-          exposes.length === 0
-            ? "Tu n'as encore ajouté aucun exposé."
-            : "Aucun exposé ne correspond."
-        }
-      </p>`;
+      '<p class="empty-msg">Aucun exposé ne correspond.</p>';
 
     return;
   }
 
   list.innerHTML = "";
 
-  filtered.forEach(exp => {
+  filtered.forEach(expose => {
 
     const item =
       document.createElement(
@@ -1561,34 +1624,57 @@ function renderExposes(exposes) {
     item.className =
       "expose-item";
 
-    let attachmentHtml = "";
+    const safeTitle =
+      escapeHtml(
+        expose.title || ""
+      );
 
-    if (exp.file && exp.file.data) {
+    const safeSubject =
+      escapeHtml(
+        expose.subject || ""
+      );
 
-      const safeName =
+    const safeDescription =
+      escapeHtml(
+        expose.description || ""
+      );
+
+    const safeId =
+      Number(expose.id);
+
+    let attachmentHtml =
+      "";
+
+    if (
+      expose.file &&
+      expose.file.data
+    ) {
+
+      const fileName =
         escapeHtml(
-          exp.file.name || "fichier"
+          expose.file.name || "fichier"
         );
 
-      const safeData =
+      const fileType =
         String(
-          exp.file.data
+          expose.file.type || ""
         );
 
       if (
-        exp.file.type &&
-        exp.file.type.startsWith("image/")
+        fileType.startsWith(
+          "image/"
+        )
       ) {
 
         attachmentHtml = `
           <a
             class="attachment"
-            href="${safeData}"
-            download="${safeName}"
+            href="${expose.file.data}"
+            download="${fileName}"
           >
             <img
-              src="${safeData}"
-              alt="${safeName}"
+              src="${expose.file.data}"
+              alt="${fileName}"
             >
           </a>
         `;
@@ -1598,10 +1684,10 @@ function renderExposes(exposes) {
         attachmentHtml = `
           <a
             class="attachment"
-            href="${safeData}"
-            download="${safeName}"
+            href="${expose.file.data}"
+            download="${fileName}"
           >
-            📄 ${safeName}
+            📄 ${fileName}
           </a>
         `;
       }
@@ -1611,36 +1697,30 @@ function renderExposes(exposes) {
       <div>
 
         ${
-          exp.subject
-            ? `
-              <span class="subject">
-                ${escapeHtml(exp.subject)}
-              </span>
-            `
+          safeSubject
+            ? `<span class="subject">${safeSubject}</span>`
             : ""
         }
 
         <span
-          class="status-pill ${statusClass(exp.status)}"
+          class="status-pill ${statusClass(
+            expose.status
+          )}"
         >
           ${escapeHtml(
-            exp.status || "En cours"
+            expose.status || "En cours"
           )}
         </span>
 
         <h4>
-          ${escapeHtml(
-            exp.title || "Sans titre"
-          )}
+          ${safeTitle}
         </h4>
 
         <p>
-          ${escapeHtml(
-            exp.description || ""
-          )}
+          ${safeDescription}
         </p>
 
-        ${dueInfo(exp.due)}
+        ${dueInfo(expose.due)}
 
         ${attachmentHtml}
 
@@ -1650,7 +1730,8 @@ function renderExposes(exposes) {
 
         <button
           class="edit-btn"
-          data-id="${Number(exp.id)}"
+          data-id="${safeId}"
+          type="button"
           title="Modifier"
         >
           ✏️
@@ -1658,7 +1739,8 @@ function renderExposes(exposes) {
 
         <button
           class="delete-btn"
-          data-id="${Number(exp.id)}"
+          data-id="${safeId}"
+          type="button"
           title="Supprimer"
         >
           🗑️
@@ -1667,33 +1749,47 @@ function renderExposes(exposes) {
       </div>
     `;
 
-    list.appendChild(item);
+    list.appendChild(
+      item
+    );
   });
 
 
-  // Boutons modifier
-  list
-    .querySelectorAll(".edit-btn")
-    .forEach(btn => {
+  // ----------------------------------------------------------
+  // BOUTONS MODIFIER
+  // ----------------------------------------------------------
 
-      btn.addEventListener(
+  list
+    .querySelectorAll(
+      ".edit-btn"
+    )
+    .forEach(button => {
+
+      button.addEventListener(
         "click",
         () => {
+
           startEdit(
-            Number(btn.dataset.id)
+            Number(
+              button.dataset.id
+            )
           );
         }
       );
-
     });
 
 
-  // Boutons supprimer
-  list
-    .querySelectorAll(".delete-btn")
-    .forEach(btn => {
+  // ----------------------------------------------------------
+  // BOUTONS SUPPRIMER
+  // ----------------------------------------------------------
 
-      btn.addEventListener(
+  list
+    .querySelectorAll(
+      ".delete-btn"
+    )
+    .forEach(button => {
+
+      button.addEventListener(
         "click",
         async () => {
 
@@ -1703,6 +1799,15 @@ function renderExposes(exposes) {
             );
 
           if (!confirmed) {
+            return;
+          }
+
+          if (!auth.currentUser) {
+
+            alert(
+              "Tu n'es plus connecté."
+            );
+
             return;
           }
 
@@ -1716,57 +1821,66 @@ function renderExposes(exposes) {
             const exposes =
               await getExposesFromServer();
 
-            const updated =
-              exposes.filter(
-                exp =>
-                  Number(exp.id) !==
-                  Number(btn.dataset.id)
+            const id =
+              Number(
+                button.dataset.id
               );
 
-            const ok =
+            const updated =
+              exposes.filter(
+                expose =>
+                  Number(expose.id) !== id
+              );
+
+            const saved =
               await saveExposesToServer(
                 updated
               );
 
-            if (ok) {
+            if (saved) {
+
+              lastExposesCache =
+                updated;
 
               renderExposes(
                 updated
               );
             }
 
-          } catch (err) {
+          } catch (error) {
 
             console.error(
               "Erreur suppression :",
-              err
+              error
             );
 
             alert(
-              "Impossible de supprimer cet exposé."
+              "Impossible de supprimer l'exposé :\n\n" +
+              getErrorMessage(error)
             );
 
           } finally {
 
             showLoading(false);
-
           }
         }
       );
-
     });
 }
 
 
 // ------------------------------------------------------------
-// 32. RECHERCHE
+// 33. RECHERCHE
 // ------------------------------------------------------------
 
 document
-  .getElementById("search-input")
+  .getElementById(
+    "search-input"
+  )
   .addEventListener(
     "input",
     () => {
+
       renderExposes(
         lastExposesCache
       );
@@ -1775,10 +1889,13 @@ document
 
 
 document
-  .getElementById("filter-subject")
+  .getElementById(
+    "filter-subject"
+  )
   .addEventListener(
     "change",
     () => {
+
       renderExposes(
         lastExposesCache
       );
@@ -1787,7 +1904,7 @@ document
 
 
 // ------------------------------------------------------------
-// 33. BADGES
+// 34. BADGES
 // ------------------------------------------------------------
 
 const BADGE_DEFS = [
@@ -1817,36 +1934,57 @@ const BADGE_DEFS = [
 
 function renderBadges(count) {
 
-  document.getElementById(
-    "badges-list"
-  ).innerHTML =
+  const badges =
+    document.getElementById(
+      "badges-list"
+    );
+
+  badges.innerHTML =
     BADGE_DEFS
-      .map(
-        badge => `
+      .map(badge => {
+
+        const unlocked =
+          count >= badge.count;
+
+        return `
           <span
             class="badge ${
-              count >= badge.count
+              unlocked
                 ? "unlocked"
                 : ""
             }"
           >
             ${badge.label}
           </span>
-        `
-      )
+        `;
+      })
       .join("");
 }
 
 
 // ------------------------------------------------------------
-// 34. PROFIL
+// 35. PROFIL
 // ------------------------------------------------------------
 
 document
-  .getElementById("save-profile-btn")
+  .getElementById(
+    "save-profile-btn"
+  )
   .addEventListener(
     "click",
     async () => {
+
+      const user =
+        auth.currentUser;
+
+      if (!user) {
+
+        alert(
+          "Tu n'es plus connecté."
+        );
+
+        return;
+      }
 
       const newUsername =
         document
@@ -1894,42 +2032,38 @@ document
           .value
           .trim();
 
-      const errorEl =
+      const errorElement =
         document.getElementById(
           "profile-error"
         );
 
-      const successEl =
+      const successElement =
         document.getElementById(
           "profile-success"
         );
 
-      errorEl.textContent = "";
-      successEl.textContent = "";
+      errorElement.textContent =
+        "";
 
-      if (!newUsername) {
+      successElement.textContent =
+        "";
 
-        errorEl.textContent =
-          "Le pseudo ne peut pas être vide.";
+      if (
+        !isValidUsername(
+          newUsername
+        )
+      ) {
+
+        errorElement.textContent =
+          "Le pseudo doit contenir 2 à 30 caractères : lettres, chiffres, _ ou -.";
 
         return;
       }
 
       if (!currentPassword) {
 
-        errorEl.textContent =
+        errorElement.textContent =
           "Entre ton mot de passe actuel pour confirmer.";
-
-        return;
-      }
-
-      const user =
-        auth.currentUser;
-
-      if (!user) {
-
-        errorEl.textContent =
-          "Tu n'es plus connecté.";
 
         return;
       }
@@ -1941,8 +2075,11 @@ document
 
       try {
 
-        // Re-authentification.
-        const cred =
+        // ----------------------------------------------------
+        // REAUTHENTIFICATION
+        // ----------------------------------------------------
+
+        const credential =
           firebase.auth.EmailAuthProvider.credential(
             user.email,
             currentPassword
@@ -1950,65 +2087,62 @@ document
 
         await withTimeout(
           user.reauthenticateWithCredential(
-            cred
-          )
+            credential
+          ),
+          12000
         );
 
 
-        const doc =
-          await withTimeout(
-            db
-              .collection("users")
-              .doc(user.uid)
-              .get()
+        // ----------------------------------------------------
+        // RÉCUPÉRATION PROFIL ACTUEL
+        // ----------------------------------------------------
+
+        const snapshot =
+          await getUserDocument(
+            user.uid
           );
 
         const data =
-          doc.exists
-            ? doc.data()
+          snapshot.exists
+            ? snapshot.data()
             : {};
 
         const currentUsername =
           data.username || "";
 
 
-        // Changement du pseudo.
+        // ----------------------------------------------------
+        // CHANGEMENT PSEUDO
+        // ----------------------------------------------------
+
         if (
           newUsername !==
           currentUsername
         ) {
-
-          if (!navigator.onLine) {
-
-            errorEl.textContent =
-              "Une connexion Internet est nécessaire pour changer le pseudo.";
-
-            showLoading(false);
-
-            return;
-          }
 
           await withTimeout(
             user.updateEmail(
               emailFromUsername(
                 newUsername
               )
-            )
+            ),
+            12000
           );
         }
 
 
-        // Changement mot de passe.
+        // ----------------------------------------------------
+        // CHANGEMENT MOT DE PASSE
+        // ----------------------------------------------------
+
         if (newPassword) {
 
           if (
             newPassword.length < 6
           ) {
 
-            errorEl.textContent =
-              "Le nouveau mot de passe doit faire 6 caractères minimum.";
-
-            showLoading(false);
+            errorElement.textContent =
+              "Le nouveau mot de passe doit faire au moins 6 caractères.";
 
             return;
           }
@@ -2016,155 +2150,125 @@ document
           await withTimeout(
             user.updatePassword(
               newPassword
-            )
+            ),
+            12000
           );
         }
 
 
+        // ----------------------------------------------------
+        // SAUVEGARDE PROFIL FIRESTORE
+        // ----------------------------------------------------
+
         const profile = {
-          firstname,
-          lastname,
-          classe
+
+          firstname:
+            firstname,
+
+          lastname:
+            lastname,
+
+          classe:
+            classe
         };
 
-
-        const newData = {
-          ...data,
-          username: newUsername,
-          profile
-        };
-
-
-        // Cache immédiat.
-        saveLocalUserData(
+        await updateUserDocument(
           user.uid,
-          newData
+          {
+            username:
+              newUsername,
+
+            profile:
+              profile
+          }
         );
 
 
-        // Firebase.
-        await withTimeout(
-          db
-            .collection("users")
-            .doc(user.uid)
-            .set(
-              {
-                username: newUsername,
-                profile
-              },
-              {
-                merge: true
-              }
-            )
-        );
+        // ----------------------------------------------------
+        // MISE À JOUR INTERFACE
+        // ----------------------------------------------------
 
+        document
+          .getElementById(
+            "welcome-name"
+          )
+          .textContent =
+            newUsername;
 
-        document.getElementById(
-          "welcome-name"
-        ).textContent =
-          newUsername;
+        document
+          .getElementById(
+            "profile-password"
+          )
+          .value =
+            "";
 
-        document.getElementById(
-          "profile-password"
-        ).value = "";
-
-        document.getElementById(
-          "profile-current-password"
-        ).value = "";
+        document
+          .getElementById(
+            "profile-current-password"
+          )
+          .value =
+            "";
 
         updateIdentityBadge(
           profile
         );
 
-        successEl.textContent =
+        successElement.textContent =
           "Profil mis à jour !";
 
-      } catch (err) {
+      } catch (error) {
 
         console.error(
           "Erreur profil :",
-          err
+          error
         );
 
-        if (
-          err.code ===
-          "auth/wrong-password"
-        ) {
-
-          errorEl.textContent =
-            "Mot de passe actuel incorrect.";
-
-        } else if (
-          err.code ===
-          "auth/invalid-credential"
-        ) {
-
-          errorEl.textContent =
-            "Mot de passe actuel incorrect.";
-
-        } else if (
-          err.code ===
-          "auth/email-already-in-use"
-        ) {
-
-          errorEl.textContent =
-            "Ce pseudo est déjà pris.";
-
-        } else if (
-          err.code ===
-          "app/timeout"
-        ) {
-
-          errorEl.textContent =
-            "Firebase ne répond pas. Vérifie ta connexion Internet.";
-
-        } else {
-
-          errorEl.textContent =
-            "Erreur : " +
-            (
-              err.message ||
-              "Impossible de mettre à jour le profil."
-            );
-        }
+        errorElement.textContent =
+          "Erreur : " +
+          getErrorMessage(error);
 
       } finally {
 
         showLoading(false);
-
       }
     }
   );
 
 
 // ------------------------------------------------------------
-// 35. INITIALISATION FINALE
+// 36. GESTION DES ERREURS JAVASCRIPT
 // ------------------------------------------------------------
 
-(async function initApp() {
-
-  console.log(
-    "Initialisation de Mes Exposés..."
-  );
-
-  try {
-
-    await configureFirebase();
-
-    console.log(
-      "Firebase initialisé correctement."
-    );
-
-  } catch (err) {
+window.addEventListener(
+  "error",
+  event => {
 
     console.error(
-      "Erreur initialisation Firebase :",
-      err
+      "Erreur JavaScript :",
+      event.error || event.message
     );
 
-    firebaseReady = false;
-
+    showLoading(false);
   }
+);
 
-})();
-```
+
+window.addEventListener(
+  "unhandledrejection",
+  event => {
+
+    console.error(
+      "Promise non gérée :",
+      event.reason
+    );
+
+    showLoading(false);
+  }
+);
+
+
+// ------------------------------------------------------------
+// 37. LANCEMENT DE L'APPLICATION
+// ------------------------------------------------------------
+
+startApplication();
