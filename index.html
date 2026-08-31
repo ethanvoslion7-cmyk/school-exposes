@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+
+  <head>
+    <meta charset="UTF-8">
+    <title>Untitled</title>
+    <link rel="stylesheet" href="./style.css">
+
+  </head>
+    
+  <body>
+  <!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <title>Connexion</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div class="card" id="login-screen">
+  <div class="holes">
+    <span></span><span></span><span></span><span></span><span></span>
+  </div>
+  <div class="stamp">Exposés 2026</div>
+
+  <div class="header">
+    <div class="logo">📘</div>
+    <h1>Mes Exposés</h1>
+  </div>
+  <p class="subtitle">Connecte-toi à ton espace de classe.</p>
+
+  <p class="error" id="login-error"></p>
+
+  <form id="login-form">
+    <div class="field">
+      <label>Pseudo</label>
+      <input type="text" id="login-username" placeholder="Ton pseudo" autocomplete="username">
+    </div>
+    <div class="field">
+      <label>Mot de passe</label>
+      <input type="password" id="login-password" placeholder="Ton mot de passe" autocomplete="current-password">
+    </div>
+    <button class="btn-login" type="submit">Se connecter</button>
+  </form>
+
+  <div class="links">
+    <a href="#" id="show-signup">Créer un compte</a>
+    <a href="#">Mot de passe oublié ?</a>
+  </div>
+</div>
+
+<div class="card hidden" id="signup-screen">
+  <div class="holes">
+    <span></span><span></span><span></span><span></span><span></span>
+  </div>
+  <div class="stamp">Exposés 2026</div>
+
+  <div class="header">
+    <div class="logo">📘</div>
+    <h1>Inscription</h1>
+  </div>
+  <p class="subtitle">Crée ton compte élève.</p>
+
+  <p class="error" id="signup-error"></p>
+
+  <form id="signup-form">
+    <div class="field">
+      <label>Pseudo</label>
+      <input type="text" id="signup-username" placeholder="Choisis un pseudo">
+    </div>
+    <div class="field">
+      <label>Mot de passe</label>
+      <input type="password" id="signup-password" placeholder="Choisis un mot de passe (6 caractères min)">
+    </div>
+    <button class="btn-login" type="submit">Créer mon compte</button>
+  </form>
+
+  <div class="links">
+    <a href="#" id="show-login">J'ai déjà un compte</a>
+    <span></span>
+  </div>
+</div>
+
+<div class="dashboard hidden" id="student-screen">
+  <aside class="sidebar">
+    <div class="sidebar-logo">
+      <div class="logo">📗</div>
+      <span>Mes Exposés</span>
+    </div>
+
+    <div class="identity-badge">
+      <span id="identity-name">Ton prénom Nom</span>
+      <span id="identity-class">Classe</span>
+    </div>
+
+    <nav class="menu">
+      <button class="menu-item active" data-tab="accueil">🏠 Accueil</button>
+      <button class="menu-item" data-tab="exposes">📚 Mes exposés</button>
+      <button class="menu-item" data-tab="profil">👤 Mon profil</button>
+    </nav>
+    <button class="btn-theme" id="theme-toggle">🌙 Mode sombre</button>
+    <button class="btn-logout" id="logout-btn">Se déconnecter</button>
+  </aside>
+
+  <main class="content">
+    <section class="tab-panel" id="tab-accueil">
+      <h2>Salut <span id="welcome-name"></span> !</h2>
+      <p class="muted">Bienvenue dans ton espace élève.</p>
+      <p class="creator-line">3e Prépa &middot; Créé par <span class="rainbow-text">Ethan</span></p>
+
+      <div class="stats">
+        <div class="stat-card">
+          <span class="stat-number" id="stat-count">0</span>
+          <span class="stat-label">exposé(s) enregistré(s)</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-number" id="stat-done">0</span>
+          <span class="stat-label">rendu(s)</span>
+        </div>
+      </div>
+
+      <h3 class="badges-title">Badges</h3>
+      <div class="badges" id="badges-list"></div>
+    </section>
+
+    <section class="tab-panel hidden" id="tab-exposes">
+      <h2>Mes exposés</h2>
+
+      <form id="expose-form" class="expose-form">
+        <input type="hidden" id="expose-id">
+        <input type="text" id="expose-title" placeholder="Titre de l'exposé">
+        <input type="text" id="expose-subject" placeholder="Matière">
+        <textarea id="expose-description" placeholder="Description ou notes"></textarea>
+
+        <div class="form-row">
+          <div class="form-col">
+            <label class="mini-label">Date de rendu</label>
+            <input type="date" id="expose-due">
+          </div>
+          <div class="form-col">
+            <label class="mini-label">Statut</label>
+            <select id="expose-status">
+              <option value="En cours">En cours</option>
+              <option value="Prêt">Prêt</option>
+              <option value="Rendu">Rendu</option>
+            </select>
+          </div>
+        </div>
+
+        <label class="file-drop" id="file-drop-label" for="expose-file">
+          <span id="file-drop-text">📎 Joindre une photo ou un fichier (ou glisse-le ici)</span>
+        </label>
+        <input type="file" id="expose-file" accept="image/*,.pdf,.doc,.docx" hidden>
+
+        <div class="form-buttons">
+          <button type="submit" class="btn-login" id="expose-submit-btn">Ajouter l'exposé</button>
+          <button type="button" class="btn-cancel hidden" id="expose-cancel-btn">Annuler la modification</button>
+        </div>
+      </form>
+
+      <div class="toolbar">
+        <input type="text" id="search-input" placeholder="🔍 Rechercher un exposé...">
+        <select id="filter-subject">
+          <option value="">Toutes les matières</option>
+        </select>
+      </div>
+
+      <div class="exposes-list" id="exposes-list">
+        <p class="empty-msg">Tu n'as encore ajouté aucun exposé.</p>
+      </div>
+    </section>
+
+    <section class="tab-panel hidden" id="tab-profil">
+      <h2>Mon profil</h2>
+      <p class="error" id="profile-error"></p>
+      <p class="success" id="profile-success"></p>
+
+      <div class="field">
+        <label>Prénom</label>
+        <input type="text" id="profile-firstname" placeholder="Ton prénom">
+      </div>
+      <div class="field">
+        <label>Nom</label>
+        <input type="text" id="profile-lastname" placeholder="Ton nom">
+      </div>
+      <div class="field">
+        <label>Classe</label>
+        <input type="text" id="profile-class" placeholder="Ex : 3e Prépa">
+      </div>
+      <div class="field">
+        <label>Pseudo</label>
+        <input type="text" id="profile-username">
+      </div>
+      <div class="field">
+        <label>Nouveau mot de passe (optionnel)</label>
+        <input type="password" id="profile-password" placeholder="Laisser vide pour ne pas changer">
+      </div>
+      <div class="field">
+        <label>Mot de passe actuel (requis pour confirmer)</label>
+        <input type="password" id="profile-current-password" placeholder="Ton mot de passe actuel">
+      </div>
+      <button class="btn-login" id="save-profile-btn">Enregistrer</button>
+    </section>
+  </main>
+</div>
+
+<div class="loading-overlay hidden" id="loading-overlay">Chargement...</div>
+
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+<script src="script.js"></script>
+</body>
+</html>
+    <script  src="./script.js"></script>
+
+  </body>
+  
+</html>
